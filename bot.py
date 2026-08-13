@@ -80,14 +80,14 @@ def init_db():
             # 🔥 9 PLANS FROM PHOTO
             plans_data = [
                 ("Real Indian Desi Porn", 199, "Pay ₹199 on the QR above and send the payment screenshot here.", 1),
-                ("CHILDCORN", 149, "Pay ₹149 on the QR above and send the payment screenshot here.", 2),
-                ("GORER@PE", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 3),
-                ("ALLVIDEOSVIPMEMBER", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 4),
-                ("BHAIBHENHOT", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 5),
-                ("HOTDESIBHABHI", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 6),
+                ("CHILD CORN", 149, "Pay ₹149 on the QR above and send the payment screenshot here.", 2),
+                ("GORE R@PE", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 3),
+                ("ALL VIDEOS VIP MEMBER", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 4),
+                ("BHAI BHEN HOT", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 5),
+                ("HOT DESI BHABHI", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 6),
                 ("INFLUENCER50%OFF", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 7),
                 ("BAAPBETI", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 8),
-                ("WVIPPLAN1LAKHVIDEO", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 9),
+                ("VIP PLAN 1 LAKH VIDEO", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 9),
             ]
             c.executemany(
                 "INSERT INTO plans (label, price, reply_text, position) VALUES (?, ?, ?, ?)",
