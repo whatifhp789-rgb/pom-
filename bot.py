@@ -24,7 +24,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db")
 API = "https://api.telegram.org"
 
 # ==================== MULTI-OWNER CONFIG ====================
-BOT_TOKEN = "8708150884:AAHA7Wn3dddxzyc1cEzKRpA3pXtj-DWv3EY"
+BOT_TOKEN = "8866193883:AAF1UzZC_aAZBzYFtSzNKDSOSOLmj1aiR00"
 OWNER_IDS = [7130712170, 8754004223]
 MEDIA_LIMIT = 10
 
