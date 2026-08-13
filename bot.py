@@ -1,6 +1,6 @@
 """
 Telegram Payment Bot — Zeta Edition (9 Plans)
-- Plan edit with pre-filled values
+- Inline edit with pre-filled values
 - Custom UPI QR upload
 - Dynamic QR fallback
 - Multi-owner support
@@ -346,7 +346,6 @@ def plans_admin_keyboard():
     rows.append([{"text": "🔙 Dashboard", "callback_data": "dash"}])
     return {"inline_keyboard": rows}
 
-# 🔥 UPDATED: Plan edit keyboard with current values
 def plan_edit_keyboard(pid):
     with db() as c:
         p = c.execute("SELECT * FROM plans WHERE id = ?", (pid,)).fetchone()
@@ -357,7 +356,7 @@ def plan_edit_keyboard(pid):
         "inline_keyboard": [
             [{"text": f"✏️ Label: {p['label']}", "callback_data": f"pset:label:{pid}"}],
             [{"text": f"💵 Price: ₹{int(p['price'])}", "callback_data": f"pset:price:{pid}"}],
-            [{"text": f"📝 Reply Text: {p['reply_text'][:20]}...", "callback_data": f"pset:reply_text:{pid}"}],
+            [{"text": f"📝 Reply Text: {p['reply_text'][:20] + '...' if len(p['reply_text']) > 20 else p['reply_text']}", "callback_data": f"pset:reply_text:{pid}"}],
             [{"text": "🎞 Plan Media", "callback_data": f"media:plan:{pid}"}],
             [{"text": "🗑 Delete Plan", "callback_data": f"pdel:{pid}"}],
             [{"text": "🔙 Plans", "callback_data": "plans:list"}],
@@ -421,7 +420,7 @@ def handle_message(msg):
         with db() as c:
             p = c.execute("SELECT * FROM plans WHERE id = ?", (pid,)).fetchone()
         
-        return send(chat_id, f"✅ {field} updated!\n\nCurrent: <code>{p[field]}</code>", plan_edit_keyboard(pid))
+        return send(chat_id, f"✅ {field} updated!\n\n🔹 New Value: <code>{p[field]}</code>", plan_edit_keyboard(pid))
 
     # Payment screenshot
     if file_id and kind == "photo" and not is_admin(chat_id):
@@ -666,7 +665,7 @@ def handle_callback(cq):
         answer()
         return send(chat_id, f"Editing plan #{pid}", plan_edit_keyboard(pid))
 
-    # 🔥 UPDATED: Show current value when editing
+    # 🔥 UPDATED: Show current value with pre-filled edit
     if data.startswith("pset:"):
         _, field, pid = data.split(":")
         
@@ -679,10 +678,11 @@ def handle_callback(cq):
         set_step(chat_id, f"pset:{field}:{pid}")
         answer()
         
+        # 🔥 Show current value with edit prompt
         prompts = {
-            "label": f"📝 Current label: <code>{p['label']}</code>\n\nSend new label (or send same to keep):",
-            "price": f"💵 Current price: <code>₹{int(p['price'])}</code>\n\nSend new price:",
-            "reply_text": f"📝 Current reply text: <code>{p['reply_text'] or '(empty)'}</code>\n\nSend new reply text:",
+            "label": f"📝 <b>Current Label:</b>\n<code>{p['label']}</code>\n\n✏️ <b>Send new label</b> (you can add emojis too):",
+            "price": f"💵 <b>Current Price:</b>\n<code>₹{int(p['price'])}</code>\n\n✏️ <b>Send new price:</b>",
+            "reply_text": f"📝 <b>Current Reply Text:</b>\n<code>{p['reply_text'] or '(empty)'}</code>\n\n✏️ <b>Send new reply text</b> (you can add emojis):",
         }
         return send(chat_id, prompts.get(field, "Send new value"))
 
