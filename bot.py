@@ -1,8 +1,11 @@
 """
-Telegram Payment Bot — Custom UPI QR Upload + Dynamic QR Fallback
-- Admin apni custom UPI QR image upload kar sakta hai
-- Agar custom QR hai toh woh dikhegi, warna dynamic generate hogi
-- Full admin customization
+Telegram Payment Bot — Zeta Edition (9 Plans)
+- 9 plans from photo
+- Custom UPI QR upload
+- Dynamic QR fallback
+- Multi-owner support
+- Welcome media
+- Plan-wise media
 """
 
 import os
@@ -26,10 +29,10 @@ DEFAULTS = {
     "bot_token": BOT_TOKEN,
     "admin_chat_id": str(OWNER_IDS[0]),
     "upi_id": "your-upi@paytm",
-    "welcome_text": "Welcome! Choose a plan below.",
+    "welcome_text": "🔥 Welcome to Zeta Store!\nChoose your plan below.",
     "access_link": "https://your-access-link.com",
     "qr_text": "Scan QR to pay",
-    "custom_qr_file_id": "",  # 🔥 Custom QR image file_id
+    "custom_qr_file_id": "",
     "submitted_text": "✅ Request Submitted!\n\n🆔 Order #{order}\n⏳ Your plan will be activated after verification.",
     "approved_text": "✅ Payment Approved!\n\n🆔 Order #{order} — Plan: {plan}\nHere is your access link:",
     "declined_text": "❌ Payment Not Verified\n\n🆔 Order #{order} — Plan: {plan}\nPlease contact support.",
@@ -74,12 +77,21 @@ def init_db():
             c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
         
         if not c.execute("SELECT COUNT(*) AS n FROM plans").fetchone()["n"]:
+            # 🔥 9 PLANS FROM PHOTO
+            plans_data = [
+                ("Real Indian Desi Porn", 199, "Pay ₹199 on the QR above and send the payment screenshot here.", 1),
+                ("CHILDCORN", 149, "Pay ₹149 on the QR above and send the payment screenshot here.", 2),
+                ("GORER@PE", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 3),
+                ("ALLVIDEOSVIPMEMBER", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 4),
+                ("BHAIBHENHOT", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 5),
+                ("HOTDESIBHABHI", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 6),
+                ("INFLUENCER50%OFF", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 7),
+                ("BAAPBETI", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 8),
+                ("WVIPPLAN1LAKHVIDEO", 39, "Pay ₹39 on the QR above and send the payment screenshot here.", 9),
+            ]
             c.executemany(
                 "INSERT INTO plans (label, price, reply_text, position) VALUES (?, ?, ?, ?)",
-                [
-                    ("Basic Plan", 49, "Pay ₹49 on the QR above and send the payment screenshot here.", 1),
-                    ("Premium Plan", 99, "Pay ₹99 on the QR above and send the payment screenshot here.", 2),
-                ],
+                plans_data
             )
 
 def get(key):
@@ -170,7 +182,6 @@ def send_media_group(chat_id, items, caption=""):
 
 # ==================== UPI QR GENERATOR ====================
 def generate_upi_qr(upi_id, amount, order_id, name="Store"):
-    """Dynamic UPI QR generator (fallback)"""
     upi_link = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR&tn=Order_{order_id}"
     encoded = urllib.parse.quote(upi_link, safe='')
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=350x350&data={encoded}"
@@ -226,7 +237,6 @@ def send_photo(chat_id, file_path, caption="", keyboard=None):
             if keyboard:
                 args["reply_markup"] = keyboard
             return requests.post(f"{API}/bot{get('bot_token')}/sendPhoto", data=args, files={"photo": f}).json()
-    # If it's a file_id (Telegram file ID)
     if file_path and not os.path.exists(file_path):
         args = {"chat_id": chat_id, "photo": file_path, "caption": caption[:1024], "parse_mode": "HTML"}
         if keyboard:
@@ -313,7 +323,7 @@ def settings_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "💳 Set UPI ID", "callback_data": "set_upi"},
-             {"text": "🖼 Upload Custom QR", "callback_data": "set_custom_qr"}],  # 🔥 NEW
+             {"text": "🖼 Upload Custom QR", "callback_data": "set_custom_qr"}],
             [{"text": "🔗 Set Access Link", "callback_data": "set_link"},
              {"text": "📝 Set QR Text", "callback_data": "set_qr_text"}],
             [{"text": "📝 Set Welcome Text", "callback_data": "set_welcome_text"}],
@@ -381,15 +391,15 @@ def handle_message(msg):
         set_step(chat_id, "")
         return send(chat_id, f"✅ {key} updated:\n<code>{text}</code>", dashboard_keyboard())
 
-    # 🔥 Admin: Set custom QR (photo upload)
+    # Admin: Set custom QR (photo upload)
     if step == "set_custom_qr" and is_admin(chat_id):
         if not file_id or kind != "photo":
             return send(chat_id, "❌ Please send a photo (QR image).")
         put("custom_qr_file_id", file_id)
         set_step(chat_id, "")
-        return send(chat_id, "✅ Custom QR uploaded successfully!\nNow users will see your custom QR.", dashboard_keyboard())
+        return send(chat_id, "✅ Custom QR uploaded successfully!", dashboard_keyboard())
 
-    # Admin: pset (edit plan field)
+    # Admin: Edit plan field
     if step and step.startswith("pset:") and is_admin(chat_id):
         _, field, pid = step.split(":")
         if field == "price":
@@ -466,7 +476,7 @@ def handle_callback(cq):
     def answer(text=""):
         call("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
-    # ==================== PLAN SELECT — MEDIA + DETAILS ====================
+    # ==================== PLAN SELECT ====================
     if data.startswith("plan:"):
         answer()
         pid = data.split(":")[1]
@@ -475,10 +485,12 @@ def handle_callback(cq):
         if not p:
             return
         
+        # Plan media
         items = media_list(f"plan:{pid}")
         if items:
             send_media_group(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
         
+        # Plan details
         text = f"✅ <b>{p['label']}</b>\n"
         text += f"💰 Price: ₹{int(p['price'])}\n"
         text += f"📝 {p['reply_text'] or 'Pay via UPI'}\n\n"
@@ -504,8 +516,6 @@ def handle_callback(cq):
                        p["label"], p["price"], time.time()))
         
         upi_id = get("upi_id") or "your-upi@paytm"
-        
-        # 🔥 Check if custom QR exists
         custom_qr = get("custom_qr_file_id")
         
         caption = f"✅ <b>{p['label']}</b>\n"
@@ -516,10 +526,8 @@ def handle_callback(cq):
         caption += "After payment, tap ✅ Check Payment Status"
         
         if custom_qr:
-            # Use custom QR (static)
             send_photo(chat_id, custom_qr, caption, payment_keyboard(pid))
         else:
-            # Generate dynamic QR (fallback)
             qr_path = generate_upi_qr(upi_id, p["price"], order_code)
             if qr_path and os.path.exists(qr_path):
                 send_photo(chat_id, qr_path, caption, payment_keyboard(pid))
@@ -711,13 +719,11 @@ def handle_callback(cq):
              text="✅ APPROVED" if approve else "❌ DECLINED", parse_mode="HTML")
         return
 
-    # 🔥 SET WELCOME TEXT
     if data == "set_welcome_text":
         set_step(chat_id, "set:welcome_text")
         answer()
         return send(chat_id, "📝 Send your new welcome text.\n\nYou can use emojis and HTML formatting.")
 
-    # 🔥 SET CUSTOM QR
     if data == "set_custom_qr":
         set_step(chat_id, "set_custom_qr")
         answer()
