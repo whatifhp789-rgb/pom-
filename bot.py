@@ -1,9 +1,8 @@
 """
-Telegram Payment Bot — Full Admin Customization
-- Welcome Text button in settings
-- Plan-wise media
-- Dynamic UPI QR
-- Multi-owner support
+Telegram Payment Bot — Custom UPI QR Upload + Dynamic QR Fallback
+- Admin apni custom UPI QR image upload kar sakta hai
+- Agar custom QR hai toh woh dikhegi, warna dynamic generate hogi
+- Full admin customization
 """
 
 import os
@@ -30,6 +29,7 @@ DEFAULTS = {
     "welcome_text": "Welcome! Choose a plan below.",
     "access_link": "https://your-access-link.com",
     "qr_text": "Scan QR to pay",
+    "custom_qr_file_id": "",  # 🔥 Custom QR image file_id
     "submitted_text": "✅ Request Submitted!\n\n🆔 Order #{order}\n⏳ Your plan will be activated after verification.",
     "approved_text": "✅ Payment Approved!\n\n🆔 Order #{order} — Plan: {plan}\nHere is your access link:",
     "declined_text": "❌ Payment Not Verified\n\n🆔 Order #{order} — Plan: {plan}\nPlease contact support.",
@@ -170,6 +170,7 @@ def send_media_group(chat_id, items, caption=""):
 
 # ==================== UPI QR GENERATOR ====================
 def generate_upi_qr(upi_id, amount, order_id, name="Store"):
+    """Dynamic UPI QR generator (fallback)"""
     upi_link = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR&tn=Order_{order_id}"
     encoded = urllib.parse.quote(upi_link, safe='')
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=350x350&data={encoded}"
@@ -225,10 +226,13 @@ def send_photo(chat_id, file_path, caption="", keyboard=None):
             if keyboard:
                 args["reply_markup"] = keyboard
             return requests.post(f"{API}/bot{get('bot_token')}/sendPhoto", data=args, files={"photo": f}).json()
-    args = {"chat_id": chat_id, "photo": file_path, "caption": caption[:1024], "parse_mode": "HTML"}
-    if keyboard:
-        args["reply_markup"] = keyboard
-    return call("sendPhoto", **args)
+    # If it's a file_id (Telegram file ID)
+    if file_path and not os.path.exists(file_path):
+        args = {"chat_id": chat_id, "photo": file_path, "caption": caption[:1024], "parse_mode": "HTML"}
+        if keyboard:
+            args["reply_markup"] = keyboard
+        return call("sendPhoto", **args)
+    return None
 
 def render(template, order="", plan=""):
     return (template or "").replace("{order}", str(order)).replace("{plan}", str(plan))
@@ -308,10 +312,11 @@ def dashboard_keyboard():
 def settings_keyboard():
     return {
         "inline_keyboard": [
-            [{"text": "💳 Set UPI", "callback_data": "set_upi"},
-             {"text": "🔗 Set Link", "callback_data": "set_link"}],
-            [{"text": "📝 Set QR Text", "callback_data": "set_qr_text"},
-             {"text": "📝 Set Welcome Text", "callback_data": "set_welcome_text"}],  # 🔥 NEW BUTTON
+            [{"text": "💳 Set UPI ID", "callback_data": "set_upi"},
+             {"text": "🖼 Upload Custom QR", "callback_data": "set_custom_qr"}],  # 🔥 NEW
+            [{"text": "🔗 Set Access Link", "callback_data": "set_link"},
+             {"text": "📝 Set QR Text", "callback_data": "set_qr_text"}],
+            [{"text": "📝 Set Welcome Text", "callback_data": "set_welcome_text"}],
             [{"text": "🔙 Dashboard", "callback_data": "dash"}],
         ]
     }
@@ -375,6 +380,14 @@ def handle_message(msg):
         put(key, text)
         set_step(chat_id, "")
         return send(chat_id, f"✅ {key} updated:\n<code>{text}</code>", dashboard_keyboard())
+
+    # 🔥 Admin: Set custom QR (photo upload)
+    if step == "set_custom_qr" and is_admin(chat_id):
+        if not file_id or kind != "photo":
+            return send(chat_id, "❌ Please send a photo (QR image).")
+        put("custom_qr_file_id", file_id)
+        set_step(chat_id, "")
+        return send(chat_id, "✅ Custom QR uploaded successfully!\nNow users will see your custom QR.", dashboard_keyboard())
 
     # Admin: pset (edit plan field)
     if step and step.startswith("pset:") and is_admin(chat_id):
@@ -491,7 +504,9 @@ def handle_callback(cq):
                        p["label"], p["price"], time.time()))
         
         upi_id = get("upi_id") or "your-upi@paytm"
-        qr_path = generate_upi_qr(upi_id, p["price"], order_code)
+        
+        # 🔥 Check if custom QR exists
+        custom_qr = get("custom_qr_file_id")
         
         caption = f"✅ <b>{p['label']}</b>\n"
         caption += f"🆔 Order #{order_code}\n"
@@ -500,12 +515,18 @@ def handle_callback(cq):
         caption += f"{get('qr_text')}\n\n"
         caption += "After payment, tap ✅ Check Payment Status"
         
-        if qr_path and os.path.exists(qr_path):
-            send_photo(chat_id, qr_path, caption, payment_keyboard(pid))
-            try: os.remove(qr_path)
-            except: pass
+        if custom_qr:
+            # Use custom QR (static)
+            send_photo(chat_id, custom_qr, caption, payment_keyboard(pid))
         else:
-            send(chat_id, "QR generation failed.", payment_keyboard(pid))
+            # Generate dynamic QR (fallback)
+            qr_path = generate_upi_qr(upi_id, p["price"], order_code)
+            if qr_path and os.path.exists(qr_path):
+                send_photo(chat_id, qr_path, caption, payment_keyboard(pid))
+                try: os.remove(qr_path)
+                except: pass
+            else:
+                send(chat_id, "QR generation failed.", payment_keyboard(pid))
         return
 
     # ==================== CHECK PAYMENT STATUS ====================
@@ -655,8 +676,8 @@ def handle_callback(cq):
 
     if data == "settings":
         answer()
-        send(chat_id, f"⚙️ Settings\n\n💳 UPI: <code>{get('upi_id')}</code>\n🔗 Link: <code>{get('access_link')}</code>\n📝 QR Text: <code>{get('qr_text')}</code>",
-             settings_keyboard())  # 🔥 Updated keyboard
+        send(chat_id, f"⚙️ Settings\n\n💳 UPI: <code>{get('upi_id')}</code>\n🔗 Link: <code>{get('access_link')}</code>\n📝 QR Text: <code>{get('qr_text')}</code>\n🖼 Custom QR: {'✅' if get('custom_qr_file_id') else '❌'}",
+             settings_keyboard())
         return
 
     if data == "bcast":
@@ -690,11 +711,17 @@ def handle_callback(cq):
              text="✅ APPROVED" if approve else "❌ DECLINED", parse_mode="HTML")
         return
 
-    # 🔥 WELCOME TEXT SET
+    # 🔥 SET WELCOME TEXT
     if data == "set_welcome_text":
         set_step(chat_id, "set:welcome_text")
         answer()
         return send(chat_id, "📝 Send your new welcome text.\n\nYou can use emojis and HTML formatting.")
+
+    # 🔥 SET CUSTOM QR
+    if data == "set_custom_qr":
+        set_step(chat_id, "set_custom_qr")
+        answer()
+        return send(chat_id, "🖼 Send your custom QR image (photo).\n\nThis QR will be shown to all users.")
 
     if data.startswith("set_"):
         key = data.replace("set_", "")
