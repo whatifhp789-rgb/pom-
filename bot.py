@@ -1,11 +1,14 @@
 """
-Telegram Payment Bot — Zeta Edition
-- NO duplicate replies
-- QR code generation with qrcode library
-- Message cleanup (auto-delete old messages)
+Telegram Payment Bot — Zeta Edition (9 Plans)
+- NO 💳 emoji on plan buttons
+- Shortened button text for long names
+- Full name shown in plan details
 - Custom UPI QR upload
+- Dynamic QR fallback
 - Multi-owner support
-- 9 Plans
+- Welcome media
+- Plan-wise media
+- Inline edit with pre-filled values
 """
 
 import os
@@ -16,9 +19,6 @@ import time
 import random
 import urllib.parse
 import requests
-import qrcode
-from io import BytesIO
-from PIL import Image
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db")
 API = "https://api.telegram.org"
@@ -75,9 +75,6 @@ def init_db():
             file_id TEXT NOT NULL,
             position INTEGER NOT NULL DEFAULT 0)""")
         c.execute("CREATE TABLE IF NOT EXISTS state (chat_id TEXT PRIMARY KEY, step TEXT NOT NULL)")
-        c.execute("CREATE TABLE IF NOT EXISTS user_messages (chat_id TEXT, message_id INTEGER, PRIMARY KEY (chat_id, message_id))")
-        c.execute("CREATE TABLE IF NOT EXISTS seen_updates (update_id INTEGER PRIMARY KEY, created_at REAL NOT NULL DEFAULT 0)")
-        c.execute("CREATE TABLE IF NOT EXISTS seen_actions (key TEXT PRIMARY KEY, ts REAL NOT NULL)")
         
         for k, v in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -146,76 +143,6 @@ def all_chat_ids():
     with db() as c:
         return [r["chat_id"] for r in c.execute("SELECT DISTINCT chat_id FROM payments").fetchall()]
 
-# ==================== DUPLICATE REPLY FIX ====================
-def already_handled(update_id):
-    """True if this update_id was processed before (duplicate delivery)."""
-    with db() as c:
-        try:
-            c.execute("INSERT INTO seen_updates (update_id, created_at) VALUES (?, ?)",
-                      (int(update_id), time.time()))
-        except sqlite3.IntegrityError:
-            return True
-        c.execute("DELETE FROM seen_updates WHERE created_at < ?", (time.time() - 86400,))
-    return False
-
-def duplicate_action(chat_id, tag, window=15):
-    """True when the same chat triggered the same action seconds ago."""
-    key = f"{chat_id}:{tag}"
-    now = time.time()
-    with db() as c:
-        c.execute("CREATE TABLE IF NOT EXISTS seen_actions (key TEXT PRIMARY KEY, ts REAL NOT NULL)")
-        row = c.execute("SELECT ts FROM seen_actions WHERE key = ?", (key,)).fetchone()
-        if row and now - row["ts"] < window:
-            return True
-        c.execute("INSERT INTO seen_actions (key, ts) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET ts = excluded.ts",
-                  (key, now))
-        c.execute("DELETE FROM seen_actions WHERE ts < ?", (now - 3600,))
-    return False
-
-# ==================== MESSAGE CLEANUP ====================
-def save_message(chat_id, message_id):
-    with db() as c:
-        c.execute("INSERT OR IGNORE INTO user_messages (chat_id, message_id) VALUES (?, ?)", 
-                  (str(chat_id), message_id))
-
-def delete_previous_messages(chat_id):
-    with db() as c:
-        messages = c.execute("SELECT message_id FROM user_messages WHERE chat_id = ?", 
-                            (str(chat_id),)).fetchall()
-        for msg in messages:
-            try:
-                call("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
-            except:
-                pass
-        c.execute("DELETE FROM user_messages WHERE chat_id = ?", (str(chat_id),))
-
-def send_clean(chat_id, text, keyboard=None, parse_mode="HTML"):
-    delete_previous_messages(chat_id)
-    result = send(chat_id, text, keyboard, parse_mode)
-    if result and result.get("ok"):
-        msg_id = result.get("result", {}).get("message_id")
-        if msg_id:
-            save_message(chat_id, msg_id)
-    return result
-
-def send_photo_clean(chat_id, file_path, caption="", keyboard=None):
-    delete_previous_messages(chat_id)
-    result = send_photo(chat_id, file_path, caption, keyboard)
-    if result and result.get("ok"):
-        msg_id = result.get("result", {}).get("message_id")
-        if msg_id:
-            save_message(chat_id, msg_id)
-    return result
-
-def send_media_group_clean(chat_id, items, caption=""):
-    delete_previous_messages(chat_id)
-    result = send_media_group(chat_id, items, caption)
-    if result and result.get("ok"):
-        for msg in result.get("result", []):
-            if msg.get("message_id"):
-                save_message(chat_id, msg["message_id"])
-    return result
-
 # ==================== MEDIA FUNCTIONS ====================
 def media_list(scope):
     with db() as c:
@@ -257,41 +184,18 @@ def send_media_group(chat_id, items, caption=""):
 
 # ==================== UPI QR GENERATOR ====================
 def generate_upi_qr(upi_id, amount, order_id, name="Store"):
-    """Generate QR code with dynamic amount using qrcode library"""
     upi_link = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR&tn=Order_{order_id}"
-    
+    encoded = urllib.parse.quote(upi_link, safe='')
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=350x350&data={encoded}"
     try:
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
-        qr.add_data(upi_link)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        
-        qr_bytes = BytesIO()
-        img.save(qr_bytes, format='PNG')
-        qr_bytes.seek(0)
-        
+        response = requests.get(qr_url, timeout=30)
         qr_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"qr_{order_id}.png")
         with open(qr_path, 'wb') as f:
-            f.write(qr_bytes.getvalue())
-        
+            f.write(response.content)
         return qr_path
     except Exception as e:
         print(f"QR error: {e}")
-        try:
-            encoded = urllib.parse.quote(upi_link, safe='')
-            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=350x350&data={encoded}"
-            response = requests.get(qr_url, timeout=30)
-            qr_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"qr_{order_id}.png")
-            with open(qr_path, 'wb') as f:
-                f.write(response.content)
-            return qr_path
-        except:
-            return None
+        return None
 
 def new_order_code():
     with db() as c:
@@ -322,8 +226,8 @@ def call(method, **payload):
         print(f"[telegram] {method} failed: {data.get('description')}")
     return data
 
-def send(chat_id, text, keyboard=None, parse_mode="HTML"):
-    args = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+def send(chat_id, text, keyboard=None):
+    args = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if keyboard:
         args["reply_markup"] = keyboard
     return call("sendMessage", **args)
@@ -347,7 +251,7 @@ def render(template, order="", plan=""):
 
 def notify(chat_id, text_key, order="", plan="", extra=""):
     body = render(get(text_key), order, plan) + (("\n" + extra) if extra else "")
-    return send_clean(chat_id, body)
+    return send(chat_id, body)
 
 def is_admin(chat_id):
     return int(chat_id) in OWNER_IDS
@@ -366,11 +270,14 @@ def extract_media(msg):
         return "photo", doc["file_id"]
     return None, ""
 
-# ==================== KEYBOARDS ====================
+# ==================== 🔥 KEYBOARDS (FIXED) ====================
+
 def start_keyboard():
+    """Main menu — NO 💳 emoji, shortened long names"""
     rows = []
     for p in get_plans():
         label = p['label']
+        # 🔥 Shorten long names for button (max 22 chars)
         if len(label) > 22:
             display_label = label[:20] + ".."
         else:
@@ -479,17 +386,17 @@ def handle_message(msg):
     kind, file_id = extract_media(msg)
     step = get_step(chat_id)
 
-    # Admin: Add media
+    # Admin: Add media (welcome or plan)
     if step and step.startswith("madd:") and is_admin(chat_id):
         scope = step.replace("madd:", "")
         if not file_id:
-            return send_clean(chat_id, "Send a photo or video, please.")
+            return send(chat_id, "Send a photo or video, please.")
         ok = media_add(scope, kind, file_id)
         if not ok:
             set_step(chat_id, "")
-            return send_clean(chat_id, f"Limit reached ({MEDIA_LIMIT}).", media_keyboard(scope))
+            return send(chat_id, f"Limit reached ({MEDIA_LIMIT}).", media_keyboard(scope))
         n = len(media_list(scope))
-        return send_clean(chat_id, f"Added ✅ ({n}/{MEDIA_LIMIT}). Send another or tap Done.",
+        return send(chat_id, f"Added ✅ ({n}/{MEDIA_LIMIT}). Send another or tap Done.",
                     {"inline_keyboard": [[{"text": "✔️ Done", "callback_data": f"mdone:{scope}"}]]})
 
     # Admin: Set value
@@ -497,15 +404,15 @@ def handle_message(msg):
         key = step.replace("set:", "")
         put(key, text)
         set_step(chat_id, "")
-        return send_clean(chat_id, f"✅ {key} updated:\n<code>{text}</code>", dashboard_keyboard())
+        return send(chat_id, f"✅ {key} updated:\n<code>{text}</code>", dashboard_keyboard())
 
-    # Admin: Set custom QR
+    # Admin: Set custom QR (photo upload)
     if step == "set_custom_qr" and is_admin(chat_id):
         if not file_id or kind != "photo":
-            return send_clean(chat_id, "❌ Please send a photo (QR image).")
+            return send(chat_id, "❌ Please send a photo (QR image).")
         put("custom_qr_file_id", file_id)
         set_step(chat_id, "")
-        return send_clean(chat_id, "✅ Custom QR uploaded successfully!", dashboard_keyboard())
+        return send(chat_id, "✅ Custom QR uploaded successfully!", dashboard_keyboard())
 
     # Admin: Edit plan field
     if step and step.startswith("pset:") and is_admin(chat_id):
@@ -515,7 +422,7 @@ def handle_message(msg):
             try:
                 value = float(text)
             except:
-                return send_clean(chat_id, "❌ Invalid price. Send a number.")
+                return send(chat_id, "❌ Invalid price. Send a number.")
         else:
             value = text
         
@@ -525,7 +432,7 @@ def handle_message(msg):
         with db() as c:
             p = c.execute("SELECT * FROM plans WHERE id = ?", (pid,)).fetchone()
         
-        return send_clean(chat_id, f"✅ {field} updated!\n\n🔹 New Value: <code>{p[field]}</code>", plan_edit_keyboard(pid))
+        return send(chat_id, f"✅ {field} updated!\n\n🔹 New Value: <code>{p[field]}</code>", plan_edit_keyboard(pid))
 
     # Payment screenshot
     if file_id and kind == "photo" and not is_admin(chat_id):
@@ -537,7 +444,7 @@ def handle_message(msg):
                 label = sel["plan_label"]
                 price = sel["price"]
             else:
-                return send_clean(chat_id, "❌ No pending payment. Select a plan with /start")
+                return send(chat_id, "❌ No pending payment. Select a plan with /start")
         
         notify(chat_id, "submitted_text", order_code, label)
         who = "@" + frm.get("username", "") if frm.get("username") else frm.get("first_name", str(chat_id))
@@ -567,29 +474,19 @@ def handle_message(msg):
 
     # Commands
     if text.startswith("/start"):
-        # 🔥 FIX: Duplicate check with longer window & proper cleanup
-        if duplicate_action(chat_id, "start"):
-            return
-        # Purani messages hatao (jo DB mein saved hain)
-        delete_previous_messages(chat_id)
-        
         items = media_list("welcome")
         if items:
-            # Direct send (clean nahi) taaki delete na ho
             send_media_group(chat_id, items, get("welcome_text"))
         else:
             send(chat_id, get("welcome_text"))
-        
-        # Keyboard bhi direct send, clean nahi
-        send(chat_id, "Choose a plan 👇", start_keyboard())
-        return
+        return send(chat_id, "Choose a plan 👇", start_keyboard())
 
     if text.startswith("/admin") or text.startswith("/dashboard"):
         if is_admin(chat_id):
-            return send_clean(chat_id, "👑 Admin Panel", dashboard_keyboard())
-        return send_clean(chat_id, "❌ Not authorized")
+            return send(chat_id, "👑 Admin Panel", dashboard_keyboard())
+        return send(chat_id, "❌ Not authorized")
 
-    send_clean(chat_id, "Send /start")
+    send(chat_id, "Send /start")
 
 def handle_callback(cq):
     cq_id = cq["id"]
@@ -600,12 +497,7 @@ def handle_callback(cq):
     def answer(text=""):
         call("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
-    # 🔥 FIX: Duplicate callback check
-    if duplicate_action(chat_id, data, 5):
-        answer()
-        return
-
-    # ==================== PLAN SELECT ====================
+    # ==================== PLAN SELECT (FULL NAME) ====================
     if data.startswith("plan:"):
         answer()
         pid = data.split(":")[1]
@@ -614,16 +506,18 @@ def handle_callback(cq):
         if not p:
             return
         
+        # Plan media
         items = media_list(f"plan:{pid}")
         if items:
-            send_media_group_clean(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
+            send_media_group(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
         
+        # 🔥 Full name (not shortened)
         text = f"✅ <b>{p['label']}</b>\n"
         text += f"💰 Price: ₹{int(p['price'])}\n"
         text += f"📝 {p['reply_text'] or 'Pay via UPI'}\n\n"
         text += "Click Buy Now to proceed."
         
-        send_clean(chat_id, text, plan_detail_keyboard(pid))
+        send(chat_id, text, plan_detail_keyboard(pid))
         return
 
     # ==================== BUY NOW ====================
@@ -653,15 +547,15 @@ def handle_callback(cq):
         caption += "After payment, tap ✅ Check Payment Status"
         
         if custom_qr:
-            send_photo_clean(chat_id, custom_qr, caption, payment_keyboard(pid))
+            send_photo(chat_id, custom_qr, caption, payment_keyboard(pid))
         else:
             qr_path = generate_upi_qr(upi_id, p["price"], order_code)
             if qr_path and os.path.exists(qr_path):
-                send_photo_clean(chat_id, qr_path, caption, payment_keyboard(pid))
+                send_photo(chat_id, qr_path, caption, payment_keyboard(pid))
                 try: os.remove(qr_path)
                 except: pass
             else:
-                send_clean(chat_id, "QR generation failed.", payment_keyboard(pid))
+                send(chat_id, "QR generation failed.", payment_keyboard(pid))
         return
 
     # ==================== CHECK PAYMENT STATUS ====================
@@ -673,7 +567,7 @@ def handle_callback(cq):
         if not p:
             return
         
-        send_clean(chat_id, "📸 Kindly send payment screenshot to verify", pay_keyboard(pid))
+        send(chat_id, "📸 ᴋɪɴᴅʟʏ ꜱᴇɴᴅ ᴘᴀʏᴍᴇɴᴛ ꜱᴄʀᴇᴇɴꜱʜᴏᴛ ᴛᴏ ᴠᴇʀɪꜰʏ", pay_keyboard(pid))
         return
 
     # ==================== CANCEL PAYMENT ====================
@@ -681,32 +575,29 @@ def handle_callback(cq):
         answer("Cancelled ❌")
         with db() as c:
             c.execute("DELETE FROM payments WHERE chat_id = ? AND status = 'selected'", (str(chat_id),))
-        return send_clean(chat_id, "❌ Payment cancelled. Use /start to choose a plan.")
+        return send(chat_id, "❌ Payment cancelled. Use /start to choose a plan.")
 
     # ==================== I HAVE PAID ====================
     if data.startswith("paid:"):
         answer("Send screenshot or UTR")
-        return send_clean(chat_id, "✅ Great!\n\n📸 Send payment screenshot, or\n📝 Type UTR / Transaction ID")
+        return send(chat_id, "✅ Great!\n\n📸 Send payment screenshot, or\n📝 Type UTR / Transaction ID")
 
     # ==================== BACK ====================
     if data == "back":
         answer()
-        # Purani messages hatao
-        delete_previous_messages(chat_id)
         items = media_list("welcome")
         if items:
             send_media_group(chat_id, items, get("welcome_text"))
         else:
             send(chat_id, get("welcome_text"))
-        send(chat_id, "Choose a plan 👇", start_keyboard())
-        return
+        return send(chat_id, "Choose a plan 👇", start_keyboard())
 
     # ==================== CANCEL ====================
     if data == "cancel":
         answer("Cancelled")
         with db() as c:
             c.execute("DELETE FROM payments WHERE chat_id = ? AND status = 'selected'", (str(chat_id),))
-        return send_clean(chat_id, "Cancelled. /start")
+        return send(chat_id, "Cancelled. /start")
 
     # ==================== ADMIN ====================
     if not is_admin(frm.get("id")):
@@ -729,64 +620,64 @@ def handle_callback(cq):
         text += f"💰 Revenue: ₹{int(revenue)}\n"
         text += f"━━━━━━━━━━━\n"
         text += f"💳 UPI: <code>{get('upi_id')}</code>"
-        send_clean(chat_id, text, dashboard_keyboard())
+        send(chat_id, text, dashboard_keyboard())
         return
 
     if data == "media:welcome":
         answer()
         items = media_list("welcome")
         if items:
-            send_media_group_clean(chat_id, items, "🎞 Welcome Media")
-        return send_clean(chat_id, f"Welcome media: {len(items)}/{MEDIA_LIMIT} items.", media_keyboard("welcome"))
+            send_media_group(chat_id, items, "🎞 Welcome Media")
+        return send(chat_id, f"Welcome media: {len(items)}/{MEDIA_LIMIT} items.", media_keyboard("welcome"))
 
     if data.startswith("media:plan:"):
         pid = data.split(":")[2]
         scope = f"plan:{pid}"
         items = media_list(scope)
         if items:
-            send_media_group_clean(chat_id, items, "🎞 Plan Media")
-        return send_clean(chat_id, f"Plan media: {len(items)}/{MEDIA_LIMIT} items.", media_keyboard(scope))
+            send_media_group(chat_id, items, "🎞 Plan Media")
+        return send(chat_id, f"Plan media: {len(items)}/{MEDIA_LIMIT} items.", media_keyboard(scope))
 
     if data.startswith("madd:"):
         scope = data.split(":", 1)[1]
         set_step(chat_id, f"madd:{scope}")
         answer()
-        return send_clean(chat_id, f"Send photos/videos (up to {MEDIA_LIMIT}). Tap Done when finished.",
+        return send(chat_id, f"Send photos/videos (up to {MEDIA_LIMIT}). Tap Done when finished.",
                     {"inline_keyboard": [[{"text": "✔️ Done", "callback_data": f"mdone:{scope}"}]]})
 
     if data.startswith("mdone:"):
         scope = data.split(":", 1)[1]
         set_step(chat_id, "")
         answer("Done")
-        return send_clean(chat_id, "Media saved ✅", media_keyboard(scope))
+        return send(chat_id, "Media saved ✅", media_keyboard(scope))
 
     if data.startswith("mclr:"):
         scope = data.split(":", 1)[1]
         media_clear(scope)
         answer("Removed")
-        return send_clean(chat_id, "All media removed.", media_keyboard(scope))
+        return send(chat_id, "All media removed.", media_keyboard(scope))
 
     if data == "plans:list":
         answer()
         plans = get_plans(False)
         if not plans:
-            return send_clean(chat_id, "No plans.", {"inline_keyboard": [[{"text": "➕ Add Plan", "callback_data": "pnew"}]]})
+            return send(chat_id, "No plans.", {"inline_keyboard": [[{"text": "➕ Add Plan", "callback_data": "pnew"}]]})
         text = "💰 Plans\n━━━━━━━━━━━\n"
         for p in plans:
             status = "🟢" if p["active"] else "🔴"
             text += f"{status} {p['id']}. {p['label']} — ₹{int(p['price'])}\n"
-        send_clean(chat_id, text, plans_admin_keyboard())
+        send(chat_id, text, plans_admin_keyboard())
         return
 
     if data == "pnew":
         set_step(chat_id, "pnew")
         answer()
-        return send_clean(chat_id, "📝 Send plan details:\n<code>Label|Price</code>\nExample: <code>Gold Plan|199</code>")
+        return send(chat_id, "📝 Send plan details:\n<code>Label|Price</code>\nExample: <code>Gold Plan|199</code>")
 
     if data.startswith("pedit:"):
         pid = data.split(":")[1]
         answer()
-        return send_clean(chat_id, f"Editing plan #{pid}", plan_edit_keyboard(pid))
+        return send(chat_id, f"Editing plan #{pid}", plan_edit_keyboard(pid))
 
     if data.startswith("pset:"):
         _, field, pid = data.split(":")
@@ -805,35 +696,35 @@ def handle_callback(cq):
             "price": f"💵 <b>Current Price:</b>\n<code>₹{int(p['price'])}</code>\n\n✏️ Send new price:",
             "reply_text": f"📝 <b>Current Reply Text:</b>\n<code>{p['reply_text'] or '(empty)'}</code>\n\n✏️ Send new reply text (you can add emojis):",
         }
-        return send_clean(chat_id, prompts.get(field, "Send new value"))
+        return send(chat_id, prompts.get(field, "Send new value"))
 
     if data.startswith("pdel:"):
         pid = data.split(":")[1]
         delete_plan(pid)
         answer("Deleted")
-        return send_clean(chat_id, "Plan deleted.", plans_admin_keyboard())
+        return send(chat_id, "Plan deleted.", plans_admin_keyboard())
 
     if data == "pay:list":
         answer()
         with db() as c:
             rows = c.execute("SELECT * FROM payments WHERE status = 'pending' ORDER BY id DESC").fetchall()
         if not rows:
-            return send_clean(chat_id, "No pending.", {"inline_keyboard": [[{"text": "🔙 Dashboard", "callback_data": "dash"}]]})
+            return send(chat_id, "No pending.", {"inline_keyboard": [[{"text": "🔙 Dashboard", "callback_data": "dash"}]]})
         for r in rows[:5]:
-            send_clean(chat_id, f"🆔 #{r['order_code']}\n{r['plan_label']} — ₹{int(r['price'])}\n👤 {r['full_name']}",
+            send(chat_id, f"🆔 #{r['order_code']}\n{r['plan_label']} — ₹{int(r['price'])}\n👤 {r['full_name']}",
                  review_keyboard(r["id"]))
         return
 
     if data == "settings":
         answer()
-        send_clean(chat_id, f"⚙️ Settings\n\n💳 UPI: <code>{get('upi_id')}</code>\n🔗 Link: <code>{get('access_link')}</code>\n📝 QR Text: <code>{get('qr_text')}</code>\n🖼 Custom QR: {'✅' if get('custom_qr_file_id') else '❌'}",
+        send(chat_id, f"⚙️ Settings\n\n💳 UPI: <code>{get('upi_id')}</code>\n🔗 Link: <code>{get('access_link')}</code>\n📝 QR Text: <code>{get('qr_text')}</code>\n🖼 Custom QR: {'✅' if get('custom_qr_file_id') else '❌'}",
              settings_keyboard())
         return
 
     if data == "bcast":
         set_step(chat_id, "bcast")
         answer()
-        return send_clean(chat_id, "📢 Send broadcast message.",
+        return send(chat_id, "📢 Send broadcast message.",
                     {"inline_keyboard": [[{"text": "⬅️ Cancel", "callback_data": "dash"}]]})
 
     if data.startswith("pay_ok:") or data.startswith("pay_no:"):
@@ -851,10 +742,10 @@ def handle_callback(cq):
         
         if approve:
             link = get("access_link")
-            send_clean(user_chat_id, f"✅ Approved!\n🆔 #{order_code}\n{plan} — ₹{int(price)}\n🔗 <a href='{link}'>{link}</a>")
+            send(user_chat_id, f"✅ Approved!\n🆔 #{order_code}\n{plan} — ₹{int(price)}\n🔗 <a href='{link}'>{link}</a>")
             answer("✅ Approved!")
         else:
-            send_clean(user_chat_id, f"❌ Declined!\n🆔 #{order_code}\n{plan} — ₹{int(price)}")
+            send(user_chat_id, f"❌ Declined!\n🆔 #{order_code}\n{plan} — ₹{int(price)}")
             answer("❌ Declined!")
         
         call("editMessageText", chat_id=chat_id, message_id=cq["message"]["message_id"],
@@ -864,12 +755,12 @@ def handle_callback(cq):
     if data == "set_welcome_text":
         set_step(chat_id, "set:welcome_text")
         answer()
-        return send_clean(chat_id, "📝 Send your new welcome text.\n\nYou can use emojis and HTML formatting.")
+        return send(chat_id, "📝 Send your new welcome text.\n\nYou can use emojis and HTML formatting.")
 
     if data == "set_custom_qr":
         set_step(chat_id, "set_custom_qr")
         answer()
-        return send_clean(chat_id, "🖼 Send your custom QR image (photo).\n\nThis QR will be shown to all users.")
+        return send(chat_id, "🖼 Send your custom QR image (photo).\n\nThis QR will be shown to all users.")
 
     if data.startswith("set_"):
         key = data.replace("set_", "")
@@ -880,7 +771,7 @@ def handle_callback(cq):
             "link": "Send Access Link",
             "qr_text": "Send QR text",
         }
-        return send_clean(chat_id, prompts.get(key, "Send value"))
+        return send(chat_id, prompts.get(key, "Send value"))
 
 # ==================== MAIN ====================
 def first_run_setup():
@@ -913,16 +804,8 @@ def main():
                         "allowed_updates": json.dumps(["message", "callback_query"])},
                 timeout=70,
             ).json()
-            
-            updates = res.get("result", [])
-            if updates:
-                new_offset = updates[-1]["update_id"] + 1
-                if new_offset > offset:
-                    offset = new_offset
-            
-            for upd in updates:
-                if already_handled(upd["update_id"]):
-                    continue
+            for upd in res.get("result", []):
+                offset = upd["update_id"] + 1
                 try:
                     if "message" in upd:
                         handle_message(upd["message"])
