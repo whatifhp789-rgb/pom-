@@ -1,3 +1,13 @@
+"""
+Telegram Payment Bot — Zeta Edition
+- NO duplicate replies
+- QR code generation with qrcode library
+- Message cleanup (auto-delete old messages)
+- Custom UPI QR upload
+- Multi-owner support
+- 9 Plans
+"""
+
 import os
 import json
 import sqlite3
@@ -66,6 +76,8 @@ def init_db():
             position INTEGER NOT NULL DEFAULT 0)""")
         c.execute("CREATE TABLE IF NOT EXISTS state (chat_id TEXT PRIMARY KEY, step TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS user_messages (chat_id TEXT, message_id INTEGER, PRIMARY KEY (chat_id, message_id))")
+        c.execute("CREATE TABLE IF NOT EXISTS seen_updates (update_id INTEGER PRIMARY KEY, created_at REAL NOT NULL DEFAULT 0)")
+        c.execute("CREATE TABLE IF NOT EXISTS seen_actions (key TEXT PRIMARY KEY, ts REAL NOT NULL)")
         
         for k, v in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -134,15 +146,38 @@ def all_chat_ids():
     with db() as c:
         return [r["chat_id"] for r in c.execute("SELECT DISTINCT chat_id FROM payments").fetchall()]
 
-# ==================== MESSAGE CLEANUP FUNCTIONS ====================
+# ==================== DUPLICATE REPLY FIX ====================
+def already_handled(update_id):
+    """True if this update_id was processed before (duplicate delivery)."""
+    with db() as c:
+        try:
+            c.execute("INSERT INTO seen_updates (update_id, created_at) VALUES (?, ?)",
+                      (int(update_id), time.time()))
+        except sqlite3.IntegrityError:
+            return True
+        c.execute("DELETE FROM seen_updates WHERE created_at < ?", (time.time() - 86400,))
+    return False
+
+def duplicate_action(chat_id, tag, window=8):
+    """True when the same chat triggered the same action seconds ago."""
+    key = f"{chat_id}:{tag}"
+    now = time.time()
+    with db() as c:
+        row = c.execute("SELECT ts FROM seen_actions WHERE key = ?", (key,)).fetchone()
+        if row and now - row["ts"] < window:
+            return True
+        c.execute("INSERT INTO seen_actions (key, ts) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET ts = excluded.ts",
+                  (key, now))
+        c.execute("DELETE FROM seen_actions WHERE ts < ?", (now - 3600,))
+    return False
+
+# ==================== MESSAGE CLEANUP ====================
 def save_message(chat_id, message_id):
-    """Save message ID for cleanup"""
     with db() as c:
         c.execute("INSERT OR IGNORE INTO user_messages (chat_id, message_id) VALUES (?, ?)", 
                   (str(chat_id), message_id))
 
 def delete_previous_messages(chat_id):
-    """Delete all previous messages for a user"""
     with db() as c:
         messages = c.execute("SELECT message_id FROM user_messages WHERE chat_id = ?", 
                             (str(chat_id),)).fetchall()
@@ -154,7 +189,6 @@ def delete_previous_messages(chat_id):
         c.execute("DELETE FROM user_messages WHERE chat_id = ?", (str(chat_id),))
 
 def send_clean(chat_id, text, keyboard=None, parse_mode="HTML"):
-    """Send message after cleaning previous ones"""
     delete_previous_messages(chat_id)
     result = send(chat_id, text, keyboard, parse_mode)
     if result and result.get("ok"):
@@ -164,7 +198,6 @@ def send_clean(chat_id, text, keyboard=None, parse_mode="HTML"):
     return result
 
 def send_photo_clean(chat_id, file_path, caption="", keyboard=None):
-    """Send photo after cleaning previous messages"""
     delete_previous_messages(chat_id)
     result = send_photo(chat_id, file_path, caption, keyboard)
     if result and result.get("ok"):
@@ -174,11 +207,9 @@ def send_photo_clean(chat_id, file_path, caption="", keyboard=None):
     return result
 
 def send_media_group_clean(chat_id, items, caption=""):
-    """Send media group after cleaning previous messages"""
     delete_previous_messages(chat_id)
     result = send_media_group(chat_id, items, caption)
     if result and result.get("ok"):
-        # Media group returns array of messages
         for msg in result.get("result", []):
             if msg.get("message_id"):
                 save_message(chat_id, msg["message_id"])
@@ -223,13 +254,12 @@ def send_media_group(chat_id, items, caption=""):
         group.append(entry)
     return call("sendMediaGroup", chat_id=chat_id, media=group)
 
-# ==================== UPI QR GENERATOR (WITH QRCODE LIBRARY) ====================
+# ==================== UPI QR GENERATOR ====================
 def generate_upi_qr(upi_id, amount, order_id, name="Store"):
     """Generate QR code with dynamic amount using qrcode library"""
     upi_link = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR&tn=Order_{order_id}"
     
     try:
-        # Create QR code
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -238,24 +268,19 @@ def generate_upi_qr(upi_id, amount, order_id, name="Store"):
         )
         qr.add_data(upi_link)
         qr.make(fit=True)
-        
-        # Create image with custom colors
         img = qr.make_image(fill_color="black", back_color="white")
         
-        # Save to bytes
         qr_bytes = BytesIO()
         img.save(qr_bytes, format='PNG')
         qr_bytes.seek(0)
         
-        # Save to file
         qr_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"qr_{order_id}.png")
         with open(qr_path, 'wb') as f:
             f.write(qr_bytes.getvalue())
         
         return qr_path
     except Exception as e:
-        print(f"QR generation error: {e}")
-        # Fallback to API method
+        print(f"QR error: {e}")
         try:
             encoded = urllib.parse.quote(upi_link, safe='')
             qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=350x350&data={encoded}"
@@ -340,14 +365,11 @@ def extract_media(msg):
         return "photo", doc["file_id"]
     return None, ""
 
-# ==================== 🔥 KEYBOARDS (FIXED) ====================
-
+# ==================== KEYBOARDS ====================
 def start_keyboard():
-    """Main menu — NO 💳 emoji, shortened long names"""
     rows = []
     for p in get_plans():
         label = p['label']
-        # 🔥 Shorten long names for button (max 22 chars)
         if len(label) > 22:
             display_label = label[:20] + ".."
         else:
@@ -456,7 +478,7 @@ def handle_message(msg):
     kind, file_id = extract_media(msg)
     step = get_step(chat_id)
 
-    # Admin: Add media (welcome or plan)
+    # Admin: Add media
     if step and step.startswith("madd:") and is_admin(chat_id):
         scope = step.replace("madd:", "")
         if not file_id:
@@ -476,7 +498,7 @@ def handle_message(msg):
         set_step(chat_id, "")
         return send_clean(chat_id, f"✅ {key} updated:\n<code>{text}</code>", dashboard_keyboard())
 
-    # Admin: Set custom QR (photo upload)
+    # Admin: Set custom QR
     if step == "set_custom_qr" and is_admin(chat_id):
         if not file_id or kind != "photo":
             return send_clean(chat_id, "❌ Please send a photo (QR image).")
@@ -544,6 +566,8 @@ def handle_message(msg):
 
     # Commands
     if text.startswith("/start"):
+        if duplicate_action(chat_id, "start"):
+            return
         items = media_list("welcome")
         if items:
             send_media_group_clean(chat_id, items, get("welcome_text"))
@@ -567,7 +591,12 @@ def handle_callback(cq):
     def answer(text=""):
         call("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
-    # ==================== PLAN SELECT (FULL NAME) ====================
+    # Check duplicate callback
+    if duplicate_action(chat_id, data, 5):
+        answer()
+        return
+
+    # ==================== PLAN SELECT ====================
     if data.startswith("plan:"):
         answer()
         pid = data.split(":")[1]
@@ -576,12 +605,10 @@ def handle_callback(cq):
         if not p:
             return
         
-        # Plan media
         items = media_list(f"plan:{pid}")
         if items:
             send_media_group_clean(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
         
-        # 🔥 Full name (not shortened)
         text = f"✅ <b>{p['label']}</b>\n"
         text += f"💰 Price: ₹{int(p['price'])}\n"
         text += f"📝 {p['reply_text'] or 'Pay via UPI'}\n\n"
@@ -874,8 +901,16 @@ def main():
                         "allowed_updates": json.dumps(["message", "callback_query"])},
                 timeout=70,
             ).json()
-            for upd in res.get("result", []):
-                offset = upd["update_id"] + 1
+            
+            updates = res.get("result", [])
+            if updates:
+                new_offset = updates[-1]["update_id"] + 1
+                if new_offset > offset:
+                    offset = new_offset
+            
+            for upd in updates:
+                if already_handled(upd["update_id"]):
+                    continue
                 try:
                     if "message" in upd:
                         handle_message(upd["message"])
