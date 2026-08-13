@@ -1,11 +1,9 @@
 """
 Telegram Payment Bot — Zeta Edition (9 Plans)
-- 9 plans from photo
+- Plan edit with pre-filled values
 - Custom UPI QR upload
 - Dynamic QR fallback
 - Multi-owner support
-- Welcome media
-- Plan-wise media
 """
 
 import os
@@ -77,7 +75,6 @@ def init_db():
             c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
         
         if not c.execute("SELECT COUNT(*) AS n FROM plans").fetchone()["n"]:
-            # 🔥 9 PLANS FROM PHOTO
             plans_data = [
                 ("Real Indian Desi Porn", 199, "Pay ₹199 on the QR above and send the payment screenshot here.", 1),
                 ("CHILD CORN", 149, "Pay ₹149 on the QR above and send the payment screenshot here.", 2),
@@ -116,7 +113,7 @@ def add_plan(label, price, reply_text=""):
 
 def update_plan(pid, label=None, price=None, reply_text=None, active=None):
     with db() as c:
-        if label:
+        if label is not None:
             c.execute("UPDATE plans SET label = ? WHERE id = ?", (label, pid))
         if price is not None:
             c.execute("UPDATE plans SET price = ? WHERE id = ?", (price, pid))
@@ -349,12 +346,18 @@ def plans_admin_keyboard():
     rows.append([{"text": "🔙 Dashboard", "callback_data": "dash"}])
     return {"inline_keyboard": rows}
 
+# 🔥 UPDATED: Plan edit keyboard with current values
 def plan_edit_keyboard(pid):
+    with db() as c:
+        p = c.execute("SELECT * FROM plans WHERE id = ?", (pid,)).fetchone()
+    if not p:
+        return {"inline_keyboard": [[{"text": "🔙 Plans", "callback_data": "plans:list"}]]}
+    
     return {
         "inline_keyboard": [
-            [{"text": "✏️ Label", "callback_data": f"pset:label:{pid}"},
-             {"text": "💵 Price", "callback_data": f"pset:price:{pid}"}],
-            [{"text": "📝 Reply Text", "callback_data": f"pset:reply_text:{pid}"}],
+            [{"text": f"✏️ Label: {p['label']}", "callback_data": f"pset:label:{pid}"}],
+            [{"text": f"💵 Price: ₹{int(p['price'])}", "callback_data": f"pset:price:{pid}"}],
+            [{"text": f"📝 Reply Text: {p['reply_text'][:20]}...", "callback_data": f"pset:reply_text:{pid}"}],
             [{"text": "🎞 Plan Media", "callback_data": f"media:plan:{pid}"}],
             [{"text": "🗑 Delete Plan", "callback_data": f"pdel:{pid}"}],
             [{"text": "🔙 Plans", "callback_data": "plans:list"}],
@@ -399,9 +402,10 @@ def handle_message(msg):
         set_step(chat_id, "")
         return send(chat_id, "✅ Custom QR uploaded successfully!", dashboard_keyboard())
 
-    # Admin: Edit plan field
+    # 🔥 UPDATED: Edit plan field with pre-filled values
     if step and step.startswith("pset:") and is_admin(chat_id):
         _, field, pid = step.split(":")
+        
         if field == "price":
             try:
                 value = float(text)
@@ -409,9 +413,15 @@ def handle_message(msg):
                 return send(chat_id, "❌ Invalid price. Send a number.")
         else:
             value = text
+        
         update_plan(int(pid), **{field: value})
         set_step(chat_id, "")
-        return send(chat_id, f"✅ {field} updated!", plan_edit_keyboard(pid))
+        
+        # Show updated plan
+        with db() as c:
+            p = c.execute("SELECT * FROM plans WHERE id = ?", (pid,)).fetchone()
+        
+        return send(chat_id, f"✅ {field} updated!\n\nCurrent: <code>{p[field]}</code>", plan_edit_keyboard(pid))
 
     # Payment screenshot
     if file_id and kind == "photo" and not is_admin(chat_id):
@@ -485,12 +495,10 @@ def handle_callback(cq):
         if not p:
             return
         
-        # Plan media
         items = media_list(f"plan:{pid}")
         if items:
             send_media_group(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
         
-        # Plan details
         text = f"✅ <b>{p['label']}</b>\n"
         text += f"💰 Price: ₹{int(p['price'])}\n"
         text += f"📝 {p['reply_text'] or 'Pay via UPI'}\n\n"
@@ -658,11 +666,24 @@ def handle_callback(cq):
         answer()
         return send(chat_id, f"Editing plan #{pid}", plan_edit_keyboard(pid))
 
+    # 🔥 UPDATED: Show current value when editing
     if data.startswith("pset:"):
         _, field, pid = data.split(":")
+        
+        with db() as c:
+            p = c.execute("SELECT * FROM plans WHERE id = ?", (pid,)).fetchone()
+        
+        if not p:
+            return answer("Plan not found!")
+        
         set_step(chat_id, f"pset:{field}:{pid}")
         answer()
-        prompts = {"label": "Send new label", "price": "Send new price", "reply_text": "Send new reply text"}
+        
+        prompts = {
+            "label": f"📝 Current label: <code>{p['label']}</code>\n\nSend new label (or send same to keep):",
+            "price": f"💵 Current price: <code>₹{int(p['price'])}</code>\n\nSend new price:",
+            "reply_text": f"📝 Current reply text: <code>{p['reply_text'] or '(empty)'}</code>\n\nSend new reply text:",
+        }
         return send(chat_id, prompts.get(field, "Send new value"))
 
     if data.startswith("pdel:"):
