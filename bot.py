@@ -17,8 +17,8 @@ import urllib.parse
 from datetime import datetime
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "8866193883:AAF1UzZC_aAZBzYFtSzNKDSOSOLmj1aiR00"
-ADMIN_IDS = [8754004223, 8664074279]  # Multiple owners
+BOT_TOKEN = "8708150884:AAHA7Wn3dddxzyc1cEzKRpA3pXtj-DWv3EY"
+ADMIN_IDS = [8754004223, 7130712170]  # Multiple owners
 DB_PATH = "bot.db"
 
 # ==================== DATABASE ====================
