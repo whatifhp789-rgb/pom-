@@ -1,8 +1,9 @@
 """
-Telegram Payment Bot — Plan-Wise Media + Full Admin Customization
-- Har plan ke liye alag photos/videos add kar sakte ho
-- Plan select → media dikhe → details + Buy Now
-- Admin panel se sab customize
+Telegram Payment Bot — Full Admin Customization
+- Welcome Text button in settings
+- Plan-wise media
+- Dynamic UPI QR
+- Multi-owner support
 """
 
 import os
@@ -304,6 +305,17 @@ def dashboard_keyboard():
         ]
     }
 
+def settings_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "💳 Set UPI", "callback_data": "set_upi"},
+             {"text": "🔗 Set Link", "callback_data": "set_link"}],
+            [{"text": "📝 Set QR Text", "callback_data": "set_qr_text"},
+             {"text": "📝 Set Welcome Text", "callback_data": "set_welcome_text"}],  # 🔥 NEW BUTTON
+            [{"text": "🔙 Dashboard", "callback_data": "dash"}],
+        ]
+    }
+
 def media_keyboard(scope):
     items = media_list(scope)
     return {
@@ -450,12 +462,10 @@ def handle_callback(cq):
         if not p:
             return
         
-        # 🔥 Plan media (photos/videos)
         items = media_list(f"plan:{pid}")
         if items:
             send_media_group(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
         
-        # Plan details
         text = f"✅ <b>{p['label']}</b>\n"
         text += f"💰 Price: ₹{int(p['price'])}\n"
         text += f"📝 {p['reply_text'] or 'Pay via UPI'}\n\n"
@@ -646,12 +656,7 @@ def handle_callback(cq):
     if data == "settings":
         answer()
         send(chat_id, f"⚙️ Settings\n\n💳 UPI: <code>{get('upi_id')}</code>\n🔗 Link: <code>{get('access_link')}</code>\n📝 QR Text: <code>{get('qr_text')}</code>",
-             {"inline_keyboard": [
-                 [{"text": "💳 Set UPI", "callback_data": "set_upi"}],
-                 [{"text": "🔗 Set Link", "callback_data": "set_link"}],
-                 [{"text": "📝 Set QR Text", "callback_data": "set_qr_text"}],
-                 [{"text": "🔙 Dashboard", "callback_data": "dash"}]
-             ]})
+             settings_keyboard())  # 🔥 Updated keyboard
         return
 
     if data == "bcast":
@@ -685,11 +690,21 @@ def handle_callback(cq):
              text="✅ APPROVED" if approve else "❌ DECLINED", parse_mode="HTML")
         return
 
+    # 🔥 WELCOME TEXT SET
+    if data == "set_welcome_text":
+        set_step(chat_id, "set:welcome_text")
+        answer()
+        return send(chat_id, "📝 Send your new welcome text.\n\nYou can use emojis and HTML formatting.")
+
     if data.startswith("set_"):
         key = data.replace("set_", "")
         set_step(chat_id, f"set:{key}")
         answer()
-        prompts = {"upi": "Send UPI ID (e.g., your-upi@paytm)", "link": "Send Access Link", "qr_text": "Send QR text"}
+        prompts = {
+            "upi": "Send UPI ID (e.g., your-upi@paytm)",
+            "link": "Send Access Link",
+            "qr_text": "Send QR text",
+        }
         return send(chat_id, prompts.get(key, "Send value"))
 
 # ==================== MAIN ====================
