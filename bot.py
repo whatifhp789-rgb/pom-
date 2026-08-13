@@ -158,7 +158,7 @@ def already_handled(update_id):
         c.execute("DELETE FROM seen_updates WHERE created_at < ?", (time.time() - 86400,))
     return False
 
-def duplicate_action(chat_id, tag, window=8):
+def duplicate_action(chat_id, tag, window=15):
     """True when the same chat triggered the same action seconds ago."""
     key = f"{chat_id}:{tag}"
     now = time.time()
@@ -567,15 +567,22 @@ def handle_message(msg):
 
     # Commands
     if text.startswith("/start"):
-        # 🔥 FIX: Check duplicate
+        # 🔥 FIX: Duplicate check with longer window & proper cleanup
         if duplicate_action(chat_id, "start"):
             return
+        # Purani messages hatao (jo DB mein saved hain)
+        delete_previous_messages(chat_id)
+        
         items = media_list("welcome")
         if items:
-            send_media_group_clean(chat_id, items, get("welcome_text"))
+            # Direct send (clean nahi) taaki delete na ho
+            send_media_group(chat_id, items, get("welcome_text"))
         else:
-            send_clean(chat_id, get("welcome_text"))
-        return send_clean(chat_id, "Choose a plan 👇", start_keyboard())
+            send(chat_id, get("welcome_text"))
+        
+        # Keyboard bhi direct send, clean nahi
+        send(chat_id, "Choose a plan 👇", start_keyboard())
+        return
 
     if text.startswith("/admin") or text.startswith("/dashboard"):
         if is_admin(chat_id):
@@ -593,7 +600,7 @@ def handle_callback(cq):
     def answer(text=""):
         call("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
-    # 🔥 FIX: Check duplicate callback
+    # 🔥 FIX: Duplicate callback check
     if duplicate_action(chat_id, data, 5):
         answer()
         return
@@ -684,12 +691,15 @@ def handle_callback(cq):
     # ==================== BACK ====================
     if data == "back":
         answer()
+        # Purani messages hatao
+        delete_previous_messages(chat_id)
         items = media_list("welcome")
         if items:
-            send_media_group_clean(chat_id, items, get("welcome_text"))
+            send_media_group(chat_id, items, get("welcome_text"))
         else:
-            send_clean(chat_id, get("welcome_text"))
-        return send_clean(chat_id, "Choose a plan 👇", start_keyboard())
+            send(chat_id, get("welcome_text"))
+        send(chat_id, "Choose a plan 👇", start_keyboard())
+        return
 
     # ==================== CANCEL ====================
     if data == "cancel":
@@ -906,13 +916,11 @@ def main():
             
             updates = res.get("result", [])
             if updates:
-                # 🔥 FIX: Update offset BEFORE processing
                 new_offset = updates[-1]["update_id"] + 1
                 if new_offset > offset:
                     offset = new_offset
             
             for upd in updates:
-                # 🔥 FIX: Skip already handled updates
                 if already_handled(upd["update_id"]):
                     continue
                 try:
