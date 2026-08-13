@@ -1,13 +1,8 @@
 """
-Telegram Payment Bot — Full Admin Customization
-- Plans customizable from admin panel
-- UPI ID set from admin
-- QR with custom text
-- Check Payment Status button ✅
-- Cancel Payment button ❌
-- Welcome media (photos/videos)
-- Buy Now button 💳
-- Back button 🔙
+Telegram Payment Bot — Plan-Wise Media + Full Admin Customization
+- Har plan ke liye alag photos/videos add kar sakte ho
+- Plan select → media dikhe → details + Buy Now
+- Admin panel se sab customize
 """
 
 import os
@@ -133,7 +128,7 @@ def all_chat_ids():
     with db() as c:
         return [r["chat_id"] for r in c.execute("SELECT DISTINCT chat_id FROM payments").fetchall()]
 
-# ==================== WELCOME MEDIA ====================
+# ==================== MEDIA FUNCTIONS ====================
 def media_list(scope):
     with db() as c:
         return [dict(r) for r in c.execute(
@@ -333,6 +328,7 @@ def plan_edit_keyboard(pid):
             [{"text": "✏️ Label", "callback_data": f"pset:label:{pid}"},
              {"text": "💵 Price", "callback_data": f"pset:price:{pid}"}],
             [{"text": "📝 Reply Text", "callback_data": f"pset:reply_text:{pid}"}],
+            [{"text": "🎞 Plan Media", "callback_data": f"media:plan:{pid}"}],
             [{"text": "🗑 Delete Plan", "callback_data": f"pdel:{pid}"}],
             [{"text": "🔙 Plans", "callback_data": "plans:list"}],
         ]
@@ -348,7 +344,7 @@ def handle_message(msg):
     kind, file_id = extract_media(msg)
     step = get_step(chat_id)
 
-    # Admin: Add welcome media
+    # Admin: Add media (welcome or plan)
     if step and step.startswith("madd:") and is_admin(chat_id):
         scope = step.replace("madd:", "")
         if not file_id:
@@ -367,6 +363,20 @@ def handle_message(msg):
         put(key, text)
         set_step(chat_id, "")
         return send(chat_id, f"✅ {key} updated:\n<code>{text}</code>", dashboard_keyboard())
+
+    # Admin: pset (edit plan field)
+    if step and step.startswith("pset:") and is_admin(chat_id):
+        _, field, pid = step.split(":")
+        if field == "price":
+            try:
+                value = float(text)
+            except:
+                return send(chat_id, "❌ Invalid price. Send a number.")
+        else:
+            value = text
+        update_plan(int(pid), **{field: value})
+        set_step(chat_id, "")
+        return send(chat_id, f"✅ {field} updated!", plan_edit_keyboard(pid))
 
     # Payment screenshot
     if file_id and kind == "photo" and not is_admin(chat_id):
@@ -431,7 +441,7 @@ def handle_callback(cq):
     def answer(text=""):
         call("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
-    # ==================== PLAN SELECT — SHOW DETAILS ====================
+    # ==================== PLAN SELECT — MEDIA + DETAILS ====================
     if data.startswith("plan:"):
         answer()
         pid = data.split(":")[1]
@@ -440,7 +450,7 @@ def handle_callback(cq):
         if not p:
             return
         
-        # Plan media
+        # 🔥 Plan media (photos/videos)
         items = media_list(f"plan:{pid}")
         if items:
             send_media_group(chat_id, items, f"<b>{p['label']}</b> — ₹{int(p['price'])}")
@@ -559,6 +569,14 @@ def handle_callback(cq):
         if items:
             send_media_group(chat_id, items, "🎞 Welcome Media")
         return send(chat_id, f"Welcome media: {len(items)}/{MEDIA_LIMIT} items.", media_keyboard("welcome"))
+
+    if data.startswith("media:plan:"):
+        pid = data.split(":")[2]
+        scope = f"plan:{pid}"
+        items = media_list(scope)
+        if items:
+            send_media_group(chat_id, items, "🎞 Plan Media")
+        return send(chat_id, f"Plan media: {len(items)}/{MEDIA_LIMIT} items.", media_keyboard(scope))
 
     if data.startswith("madd:"):
         scope = data.split(":", 1)[1]
